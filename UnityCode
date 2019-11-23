@@ -1,0 +1,1179 @@
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+using System.Runtime.InteropServices;
+using System.Security.Permissions;
+using SharpConnect;
+using Leap;
+using System;
+using System.Text;
+using System.IO.Ports;
+using System.Diagnostics;
+public class CameraRotate : MonoBehaviour {
+    //initial controller
+     Controller controller;
+    //public bool A150or30;
+    public float fingvelabs=0;
+    public Connector test = new Connector();
+    string lastMessage;
+    //public Transform PlayerCoord;
+    public Camera camFront;
+    public Camera camRear;
+    public Camera camLeft;
+    public Camera camRight;
+    bool connected=false;
+    public Boolean collision = false;
+    public long NumberOfHits = 0;
+    //set rotation speed
+    public float turnSpeed = 200f;
+    bool LeapKeyboardFlag =true;
+    char commandchar = '\n';
+    GameObject[] ObjCurrent;
+    Vector3[] originalPosition;
+
+    Vector3 cfop,crop,clop,cbop;
+    Quaternion cfor, cror, clor, cbor;
+
+    Quaternion[] originalRotation;
+    Vector3 hcop;
+    Quaternion hcor;
+    public GameObject HC;
+    int CurrentObj = 1;
+    int TotalObjects = 13;
+    Stopwatch stopwatch = null;
+    bool HitSend = false;
+    // Use this for initialization
+
+
+    //string portname = "COM9";
+    //Habib
+    //string portname = "COM9";
+    //Muheng
+    //string portname="COM3";
+    //Chen
+    string portname = "COM5";
+    //string portname = "\\\\.\\COM5";
+    //HemchandVariablesStart
+    private bool frameOnce = false;
+    private float xPos, yPos, zPos;
+    byte[] byteMsg;
+    //Main Servo Pair
+    private float thetaNormMain, siNormMain;
+    //Top Right Servo Pair
+    private float thetaNormTR, siNormTR;
+    //Bottom Right Servo Pair
+    private float thetaNormBR, siNormBR;
+    //Bottom Left Servo Pair
+    private static float thetaNormBL, siNormBL;
+    //Top Left Servo Pair
+    private static float thetaNormTL, siNormTL;
+
+    // Timer Instantiation 
+    private System.Timers.Timer timer;
+    private System.Timers.Timer timer1;
+    // Variable to store hand count
+    private int handCount = 0;
+    private int frameCount = 0;
+    private int flagSetCount = 0;
+
+    Boolean InServoCtrl = false;
+    Boolean executeServoCalc = false;
+
+    Boolean NonArrSingleElem = false;
+    public Boolean AeroGunFlag = false;
+    Boolean AeroGunTimerFlag = false;
+    //true; //Enable Non Hemchand, the previous single element one
+
+    //HemchandVariablesEnd
+
+  
+    //Hemchand's Methods
+    /*
+    * This method is the timer method that gets called every 150 milliseconds 
+    */
+
+    /*
+     * This method is to communicate with Arduino using Write in the form of a message string
+     * with Theta and Si of all the servos
+     * @param tAngleA The normalized theta angle of servoA(Centre pair)
+     * @param sAngleA The normalized phi angle of servoA
+     * @param tAngleB The normalized theta angle of servoB(Top Right Pair)
+     * @param sAngleB The normalized phi angle of servoB
+     */
+    /**
+* Returns a normalized degree value for the calculated Theta and Phi
+* @param value an absolute double giving the normalised value
+* @return      the normalized value in degrees
+*/
+    public static double normalizeDegree(double value)
+    {
+        value = (value > 90) ? 90 : value;
+        value = (value < -90) ? -90 : value;
+        return 90 + value;
+    }
+
+
+    /**
+     * Returns Theta ans Psi degree values in the form of list
+     * @param xoff The offset in mm from Leap Motion Origin to centre of Psi rotation servo in X direction 
+     * @param yoff The offset in mm from Leap Motion Origin to centre of Theta rotation servo in Y direction
+     * @param zoff The offset in mm from Leap Motion Origin to centre of Theta rotation servo in Z direction
+     * @param x    The Leap Motion X position parameter in mm
+     * @param y    The Leap Motion Y position parameter in mm
+     * @param z    The Leap Motion Z position parameter in mm
+     * @param b    The distance in mm from centre of Theta servo to centre of Psi servo in poitive Z direction
+     * @param c    The distance in mm from end point of b to the centre of Psi servo
+     * @return     The list of Theta and Psi in normalised degrees
+    */
+    private void tAndSiFunc(float xoff, float yoff, float zoff, float x, float y, float z, int b, int c, out float theta, out float si)
+    {
+        double angleTDeg = 0;
+        double angleTRad = 0;
+        double minangle = 0;
+        double maxangle = 82;
+
+        if (y >= c + yoff)
+        {
+            maxangle = 0;
+            minangle = -81;
+        }
+
+
+        for (double t = minangle; t < maxangle; t += 0.001)
+        {
+
+            double trad = t * Math.PI / 180;
+            double func = (((c * z) - (zoff * c)) * Math.Sin(trad)) + (((c * y) - (yoff * c)) * Math.Cos(trad));
+            if ((int)func == (Math.Pow(c, 2)))
+            {
+                angleTDeg = t;
+                angleTRad = trad;
+                break;
+            }
+        }
+        theta = (float)Math.Round(normalizeDegree(angleTDeg), MidpointRounding.AwayFromZero);
+        double zAtQ = zoff + (b * Math.Cos((double)angleTRad)) + (c * Math.Sin((double)angleTRad));
+        double sRad = Math.Atan2(x - xoff, z - zAtQ);
+        double sDeg = sRad * 180 / Math.PI;
+        si = (float)Math.Round(normalizeDegree(sDeg), MidpointRounding.AwayFromZero);
+    }
+
+
+    /**
+     * This method evaluates Theta and Psi values for Centre located Leap servo with the given offsets
+     * and updates the global variables every time the method is called
+     * @param x    The Leap Motion X position parameter in mm
+     * @param y    The Leap Motion Y position parameter in mm
+     * @param z    The Leap Motion Z position parameter in mm
+     * @return     void
+     */
+    private void mainServoLeapBox(float x, float y, float z, out float tMain, out float sMain)
+    {
+        // Offset for main servo from Leap Motion
+        float xoff = 70;
+        float yoff = 125;//88;
+        float zoff = -30;//-21;
+        int c = 70;//52;
+        //int b = 13;
+        int b = 25;//
+        float tMain1 = 0, sMain1 = 0;
+        tAndSiFunc(xoff, yoff, zoff, x, y, z, b, c, out tMain1, out sMain1);
+        tMain = 180-tMain1;
+        sMain = 180-sMain1;
+    }
+
+
+    /**
+     * This method evaluates Theta and Psi values for Top Right located servo pair with the given offsets
+     * and updates the global variables every time the method is called
+     * @param x    The Leap Motion X position parameter in mm
+     * @param y    The Leap Motion Y position parameter in mm
+     * @param z    The Leap Motion Z position parameter in mm
+     * @return     void
+     */
+    private void servoTR(float x, float y, float z, out float tTR, out float sTR)
+    {
+        // Offset for Top Right servos from Leap Motion
+        //float xoff = 160;
+        //float yoff = 240;
+        float xoff = 250;
+        float yoff = 165;
+
+        float zoff = -6 - 11;
+        int c = 48;
+        //int b = 16;
+        int b = 0;
+        tAndSiFunc(xoff, yoff, zoff, x, y, z, b, c, out tTR, out sTR);
+    }
+
+    private void servoBR(float x, float y, float z, out float tBR, out float sBR)
+    {
+        // Offset for Top Right servos from Leap Motion
+        //float xoff = 160;
+        //float yoff = -60;
+        float xoff = 250;
+        float yoff = -165;
+
+        float zoff = -6 - 11;
+        int c = 48;
+        //int b = 16;
+        int b = 0;
+        tAndSiFunc(xoff, yoff, zoff, x, y, z, b, c, out tBR, out sBR);
+    }
+
+    private void servoBL(float x, float y, float z, out float tBL, out float sBL)
+    {
+        // Offset for Bottom Right servos from Leap Motion
+        //float xoff = -80;
+        //float yoff = -55;
+        float xoff = -250;
+        float yoff = -165;
+        float zoff = -6 - 11;
+        int c = 48;
+        //int b = 16;
+        int b = 0;
+        tAndSiFunc(xoff, yoff, zoff, x, y, z, b, c, out tBL, out sBL);
+    }
+
+    private void servoTL(float x, float y, float z, out float tTL, out float sTL)
+    {
+        // Offset for Top Right servos from Leap Motion
+        //float xoff = -85;
+        //float yoff = 235;
+        float xoff = -250;
+        float yoff = 165;
+        float zoff = -6 - 11;
+        int c = 48;
+        // int b = 16;
+        int b = 0;
+        tAndSiFunc(xoff, yoff, zoff, x, y, z, b, c, out tTL, out sTL);
+    }
+
+
+    /*
+     * This method is called whenever the frame is ready
+     */
+     /*
+    public void detectHandPosition(object sender, FrameEventArgs args)
+    {
+
+        Frame frame = controller.Frame();
+        Frame previous = controller.Frame(1);
+        // Gives the number of hands detected
+        int frameHandCount = frame.Hands.Count;
+        if (frameHandCount != 0)
+        {
+            this.handCount = frameHandCount;
+        }
+        else
+        {
+            this.handCount = 0;
+        }
+        int extendedFingers = 0;
+        Boolean enableTimer = false;
+        // For each hand it detects
+        foreach (Hand hand in frame.Hands)
+        {
+            frameCount++;
+            for (int f = 0; f < hand.Fingers.Count; f++)
+            {
+                Finger extFingerNo = hand.Fingers[f];
+                if (extFingerNo.IsExtended)
+                {
+                    extendedFingers++;
+                }
+            }
+
+
+            // Check if the hand is righthanded
+            if (hand.IsRight && frameOnce == false)
+            {
+                // Index finger coordinates    
+                frameOnce = true;
+
+                Leap.Vector handPos = hand.Fingers[1].TipPosition;
+                Leap.Vector fingVel = hand.Fingers[1].TipVelocity;
+
+
+                this.xPos = handPos.x;
+                this.zPos = handPos.y;
+                this.yPos = -handPos.z;
+
+                pitchTxt.Text = xPos.ToString();
+                yawTxt.Text = yPos.ToString();
+                rollTxt.Text = zPos.ToString();
+
+                checkBox1.IsChecked = true;
+                if (zPos > 75)
+                {
+                    if (executeServoCalc == true)
+                    {
+                        // Methods to be called to evaluate Theta and Phi
+                        mainServoLeapBox(xPos, yPos, zPos, out thetaNormMain, out siNormMain);
+                        servoTR(xPos, yPos, zPos, out thetaNormTR, out siNormTR);
+                        servoBR(xPos, yPos, zPos, out thetaNormBR, out siNormBR);
+                        flagSetCount++;
+                    }
+                    else
+                    {
+                        // mainServoLeapBox(xPos, yPos, zPos, out thetaNormMain, out siNormMain);
+                        servoBL(xPos, yPos, zPos, out thetaNormBL, out siNormBL);
+                        servoTL(xPos, yPos, zPos, out thetaNormTL, out siNormTL);
+                        flagSetCount++;
+                    }
+
+                }
+
+                mainT.Text = thetaNormMain.ToString();
+                mainS.Text = siNormMain.ToString();
+                tTR.Text = thetaNormTR.ToString();
+                sTR.Text = siNormTR.ToString();
+                tBR.Text = thetaNormBR.ToString();
+                sBR.Text = siNormBR.ToString();
+                tBL.Text = thetaNormBL.ToString();
+                sBL.Text = siNormBL.ToString();
+                tTL.Text = thetaNormTL.ToString();
+                sTL.Text = siNormTL.ToString();
+                frameOnce = false;
+            }
+            else if (hand.IsLeft && extendedFingers == 0)
+            {
+                Leap.Vector palmPos = hand.PalmPosition;
+
+                float yPalm = palmPos.y;
+
+                foreach (Hand preHand in previous.Hands)
+                {
+                    if (yPalm < preHand.PalmPosition.y)
+                    {
+                        // rtb.AppendText("Decreasing\n");
+                        //Console.WriteLine("Decreasing");
+                    }
+                    else
+                    {
+                        // rtb.AppendText("Increasing\n");
+                        //Console.WriteLine("Increasing");
+                    }
+                }
+            }
+            if (extendedFingers == 1 && enableTimer == false)
+            {
+                //Gets executed only when one finger is extended
+                this.timer.Enabled = true;//ServoMessage Timer
+                                          //Currently servo will get command only in a one finger mode/
+                                          //However the angle calculations can be observed with more than one extended finger/s
+
+            }
+
+        }
+
+        checkBox1.IsChecked = false;
+
+        frameOnce = false;
+    }
+    */
+    /*
+* This method is to communicate with Arduino using Write in the form of a message string
+* with Theta and Si of all the servos
+* @param tAngleA The normalized theta angle of servoA(Centre pair)
+* @param sAngleA The normalized phi angle of servoA
+* @param tAngleB The normalized theta angle of servoB(Top Right Pair)
+* @param sAngleB The normalized phi angle of servoB
+*/
+    private void ServoMessage()
+    {
+
+
+        try
+        {
+            // If port is open and hand count is not zero, write to the port
+            //port.IsOpen && 
+            if (handCount > 0)
+            {
+                float AeroHaptVal = 30;
+                // if (A150or30 == true)
+               // A150or30 = AeroGunFlag;
+                if (AeroGunFlag == true)
+                {
+                    AeroHaptVal = 150;
+                }
+                else
+                    AeroHaptVal = 30;
+                String s5 = "A" + siNormTR.ToString() + ":" + thetaNormTR.ToString() + "&";
+                String s4 = "B" + siNormBR.ToString() + ":" + thetaNormBR.ToString() + "&";
+                String s3 = "C" + siNormMain.ToString() + ":" + thetaNormMain.ToString() + "&";
+                String s2 = "D" + siNormBL.ToString() + ":" + thetaNormBL.ToString() + "&";
+                String s1 = "E" + siNormTL.ToString() + ":" + thetaNormTL.ToString() + "&";
+                String s0 = "F" + AeroHaptVal.ToString()  + ":" + AeroHaptVal.ToString() + "^";
+                s1 += s0;
+                s2 += s1;
+                s3 += s2;
+                s4 += s3;
+                s5 += s4;
+
+                //this.port.Write(servoMsg);
+                //byte[] 
+                byteMsg = Encoding.ASCII.GetBytes(s5);
+
+                s5 = null;
+            }
+            else
+            {
+                //     this.port.Close();
+            }
+
+        }
+        catch (FormatException e)
+        {
+            UnityEngine.Debug.Log(e.Message);
+        }
+    }
+
+
+    private void servoCtrl()
+    {
+        if (InServoCtrl == false)
+        {
+            InServoCtrl = true;
+
+            ServoMessage();
+        }
+        InServoCtrl = false;
+
+    }
+
+    private void timer1_Tick(object sender, EventArgs e)
+    {
+        if (executeServoCalc == false)
+            executeServoCalc = true;
+        else
+            executeServoCalc = false;
+
+    }
+
+    public void controlServos(object source, System.Timers.ElapsedEventArgs e)
+    {
+
+        try
+        {
+            servoCtrl();
+
+        }
+        catch (Exception ex)
+        {
+            throw new Exception(ex.StackTrace);
+        }
+    }
+    //HemChandMethods End here
+    SerialPort sp;
+    bool SerialOpenInProgress = false;
+    bool SerialOpenDone = false;
+    public void theout(object source, System.Timers.ElapsedEventArgs e)
+    {
+        if(SerialOpenInProgress==false && SerialOpenDone==false)
+        {
+            SerialOpenInProgress = true;
+        if (sp == null)
+        {
+
+            //  bool bol = Array.Exists(SerialPort.GetPortNames(), E => E == portname);
+            bool bol = true;
+            if (bol == false)
+            {
+                    //trackerval = false;
+                    //leaptrackflag = false;
+                    UnityEngine.Debug.Log("Serial Port Doesn't Exist.");
+                return;
+            }
+            //SerialPort
+            sp = new SerialPort(portname, 115200, Parity.None, 8, StopBits.One);
+
+                try
+                {
+                    if (sp != null)
+                        if (sp.IsOpen == false)
+                            sp.Open();
+                }
+                catch
+                {
+                    return;
+                }
+                SerialOpenInProgress = false;
+                SerialOpenDone = true;
+            }
+       
+
+    }
+        if (sp != null && SerialOpenDone==true)
+
+            if (sp.IsOpen == true)
+
+            {
+                int t = byteMsg.Length;
+                if (byteMsg != null)
+                { 
+                    sp.Write(byteMsg, 0, byteMsg.Length);
+                    //NumberOfHits = 0;
+                }
+                byteMsg = null;
+            }
+
+            //float aaa = index_x;
+            //sp.Close();
+    }
+
+    void Start () {
+
+        string s5 = "A90:90&B90:90&C90:90&D90:90&E90:90&F:30:30^";
+        byteMsg = Encoding.ASCII.GetBytes(s5);
+
+
+        //HemchandInitStart
+        //Setting the timer to 150 millisecods
+        timer = new System.Timers.Timer(40);
+        // controlServos method to get called when time elapses
+        timer.Elapsed += new System.Timers.ElapsedEventHandler(controlServos);
+        timer.AutoReset = true;
+
+        timer1 = new System.Timers.Timer(100);
+        // controlServos method to get called when time elapses
+        timer1.Elapsed += new System.Timers.ElapsedEventHandler(timer1_Tick);
+        timer1.AutoReset = true;
+        timer1.Enabled = true;
+
+
+        //HemchandInitEnd
+        stopwatch = new Stopwatch();
+
+        //Serial Timer
+
+        System.Timers.Timer t = new System.Timers.Timer(100);
+      /*  DispatcherTimer updatetimer = new DispatcherTimer();
+        updatetimer.Interval = TimeSpan.FromMilliseconds(200);
+        updatetimer.Tick += UpdatedMediaHandler;
+        updatetimer.Start();*/
+
+        t.Elapsed += new System.Timers.ElapsedEventHandler(theout);
+        t.AutoReset = true;
+        t.Enabled = true;
+
+        //
+
+        HC = GameObject.Find("HandController");
+        hcop=HC.transform.position;
+        hcor = HC.transform.rotation;
+        //initial controller
+        controller = new Controller();
+        //initial swipe gesture
+        //controller.EnableGesture(Gesture.GestureType.TYPESWIPE);
+        controller.EnableGesture(Gesture.GestureType.TYPECIRCLE);
+        
+        //controller.Config.SetFloat("Gesture.Swipe.MinLength", 200.0f);
+        //controller.Config.SetFloat("Gesture.Swipe.MinVelocity", 750f);
+        controller.Config.Save();
+
+        //Your server IP or URL without HTTP://
+        //ObjCurrent = 
+        ObjCurrent = new GameObject[TotalObjects];
+        originalPosition = new Vector3[TotalObjects];
+        originalRotation = new Quaternion[TotalObjects];
+        for (int i = 1; i < TotalObjects+1; i++)
+        {
+            string ObjNext = "Obj";
+            ObjNext = ObjNext + i.ToString();
+            //ObjCurrent = GameObject.Find();
+            //GameObject.Find(ObjNext).transform.localScale = new Vector3(0, 0, 0);
+            ObjCurrent[i-1]=GameObject.Find(ObjNext);
+            originalPosition[i-1]= ObjCurrent[i - 1].transform.position;
+            originalRotation[i - 1] = ObjCurrent[i - 1].transform.rotation;
+            if (i > 1)
+                ObjCurrent[i - 1].SetActive(false);
+        }
+
+        camFront = GameObject.Find("Camera 4 (front)").GetComponent<Camera>();
+        camRear = GameObject.Find("Camera 3 (back)").GetComponent<Camera>();
+        camLeft = GameObject.Find("Camera 2 (left)").GetComponent<Camera>();
+        camRight = GameObject.Find("Camera 1 (right)").GetComponent<Camera>();
+        cfop = camFront.transform.position;
+        cfor = camFront.transform.rotation;
+        cbop = camRear.transform.position;
+        cbor = camRear.transform.rotation;
+        clop = camLeft.transform.position;
+        clor = camLeft.transform.rotation;
+        crop = camRight.transform.position;
+        cror = camRight.transform.rotation;
+
+        try
+        {
+            string testconn = test.fnConnectResult("127.0.0.1", 10000, System.Environment.MachineName);
+            UnityEngine.Debug.Log(testconn);
+            if (test.res != "")
+            {
+                UnityEngine.Debug.Log(test.res);
+
+            }
+            if (testconn.Equals("Connection Succeeded"))
+                connected = true;
+            else
+            {
+                connected = false;
+            }
+        }
+        catch (Exception)
+        {
+
+
+            throw;
+        }
+         
+       //
+        // C#
+
+
+    }
+
+    void OnApplicationQuit()
+    {
+        
+        if(connected==true)
+        { 
+        try { test.fnDisconnect(); }
+        catch { }
+        }
+        try
+        {
+            if (sp != null)
+                if (sp.IsOpen)
+                    sp.Close();
+        }
+        catch (Exception)
+        {
+
+            throw;
+        }
+
+    }
+    bool OnUpdateFlag = false;
+    bool HandWasValidFlag = false;
+    // Update is called once per frame
+    void Update()
+    {
+        if (OnUpdateFlag == false)
+        {
+            OnUpdateFlag = true;
+            //initial swipe gesture
+            Frame frame = controller.Frame();
+            GestureList gestures = frame.Gestures();
+            Hand firstHand = null;
+            Hand secondHand = null;
+            bool handleftflag = false;
+            Hand hand = null;
+            Hand handright = null;
+
+
+            if (connected == true)
+            {
+                if ((LeapKeyboardFlag && Input.GetKeyDown("space")))
+                {
+                    UnityEngine.Debug.Log("space key was pressed");
+                    test.fnPacketTest("space key was pressed");
+                }
+
+                if ((LeapKeyboardFlag && Input.GetKeyDown("escape")))
+                {
+                    UnityEngine.Debug.Log("escape key was pressed");
+                    test.fnPacketTest("escape key was pressed");
+                }
+                if (test.strMessage != "JOIN")
+                {
+                    string a = test.res;
+                    if (a != lastMessage)
+                    {
+                        UnityEngine.Debug.Log(a);
+                        lastMessage = a;
+                        if (lastMessage.Equals("Disconnected"))
+                        {
+                            connected = false;
+                        }
+                        else
+                        {
+                            if (lastMessage != "")
+                                commandchar = lastMessage[0];
+                        }
+                    }
+                }
+                // test.fnPacketTest(PlayerCoord.position[0] + "," + PlayerCoord.position[1] + "," + PlayerCoord.position[2]);
+
+            }
+
+            if (CurrentObj == TotalObjects && (commandchar != 'p' && commandchar != 'n'))
+            {
+                commandchar = '0';
+
+            }
+
+            if (CurrentObj == TotalObjects)// && connected == true)
+            {
+
+
+
+                if (NumberOfHits > 0)
+                {
+                    //test.fnPacketTest("H");
+                    //NumberOfHits = 0;
+                    AeroGunFlag = true;
+
+                    AeroGunTimerFlag = false;
+                }
+                else
+                    //    test.fnPacketTest("M");
+                    ;
+
+                if (AeroGunFlag == true && AeroGunTimerFlag != true)
+                {
+                    stopwatch.Stop();
+                    stopwatch.Reset();
+                    stopwatch.Start();
+                    AeroGunTimerFlag = true;
+                }
+                if (AeroGunFlag != false && ((AeroGunTimerFlag == true && stopwatch.ElapsedMilliseconds > 100)))
+                {
+                    AeroGunFlag = false;
+                    AeroGunTimerFlag = false;
+                    stopwatch.Stop();
+                    NumberOfHits = 0;
+                }
+            }
+            else
+            {
+                AeroGunFlag = false;
+                AeroGunTimerFlag = false;
+                stopwatch.Stop();
+            }
+            Vector3 AxisToRotateAround;
+            //rotation controll by PC
+            if ((LeapKeyboardFlag && Input.GetKey(KeyCode.LeftArrow)) || commandchar == 'a')
+            {
+                AxisToRotateAround = Vector3.up;
+                //transform.Rotate(Vector3.up, turnSpeed * Time.deltaTime);
+                //camFront.transform.LookAt(Vector3.zero);
+                camFront.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+
+                //camRear.transform.LookAt(Vector3.zero);
+                camRear.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+
+                //camLeft.transform.LookAt(Vector3.zero);
+                camLeft.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+
+                //camRight.transform.LookAt(Vector3.zero);
+                camRight.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+                HC.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+            }
+
+            if ((LeapKeyboardFlag && Input.GetKey(KeyCode.RightArrow)) || commandchar == 'd')
+            {
+                AxisToRotateAround = Vector3.down;
+                camFront.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+
+
+                camRear.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+
+
+                camLeft.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+
+                camRight.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+                HC.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+            }
+
+
+            if ((LeapKeyboardFlag && Input.GetKey(KeyCode.UpArrow)) || commandchar == 'w')
+            {
+                AxisToRotateAround = Vector3.left;
+                camFront.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+
+
+                camRear.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+
+
+                camLeft.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+
+                camRight.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+
+                HC.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+
+            }
+
+
+            if ((LeapKeyboardFlag && Input.GetKey(KeyCode.DownArrow)) || commandchar == 's')
+            {
+                AxisToRotateAround = Vector3.right;
+                camFront.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+
+
+                camRear.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+
+
+                camLeft.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+
+                camRight.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+
+                HC.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+            }
+            if ((LeapKeyboardFlag && Input.GetKeyDown(KeyCode.P)) || commandchar == 'p')
+            {
+                ObjCurrent[CurrentObj - 1].SetActive(false);
+                CurrentObj = CurrentObj - 1;
+                if (CurrentObj <= 0)
+                    CurrentObj = TotalObjects;
+                ObjCurrent[CurrentObj - 1].SetActive(true);
+                ObjCurrent[CurrentObj - 1].transform.position = originalPosition[CurrentObj - 1];
+                ObjCurrent[CurrentObj - 1].transform.rotation = originalRotation[CurrentObj - 1];
+                HC.transform.position = hcop;
+                HC.transform.rotation = hcor;
+
+                camFront.transform.position = cfop;
+                camFront.transform.rotation = cfor;
+                camRear.transform.position = cbop;
+                camRear.transform.rotation = cbor;
+                camLeft.transform.position = clop;
+                camLeft.transform.rotation = clor;
+                camRight.transform.position = crop;
+                camRight.transform.rotation = cror;
+
+                if (CurrentObj != TotalObjects && connected == true)
+                {
+                    test.fnPacketTest("N");
+                }
+                else if (CurrentObj == TotalObjects && connected == true)
+                {
+                    test.fnPacketTest("T");
+                }
+            }
+            if ((LeapKeyboardFlag && Input.GetKeyDown(KeyCode.N)) || commandchar == 'n')
+            {
+                ObjCurrent[CurrentObj - 1].SetActive(false);
+                CurrentObj = CurrentObj + 1;
+                if (CurrentObj >= TotalObjects + 1)
+                    CurrentObj = 1;
+                ObjCurrent[CurrentObj - 1].SetActive(true);
+                ObjCurrent[CurrentObj - 1].transform.position = originalPosition[CurrentObj - 1];
+                ObjCurrent[CurrentObj - 1].transform.rotation = originalRotation[CurrentObj - 1];
+                HC.transform.position = hcop;
+                HC.transform.rotation = hcor;
+                camFront.transform.position = cfop;
+                camFront.transform.rotation = cfor;
+                camRear.transform.position = cbop;
+                camRear.transform.rotation = cbor;
+                camLeft.transform.position = clop;
+                camLeft.transform.rotation = clor;
+                camRight.transform.position = crop;
+                camRight.transform.rotation = cror;
+                if (CurrentObj != TotalObjects && connected == true)
+                {
+                    test.fnPacketTest("N");
+                }
+                else if (CurrentObj == TotalObjects && connected == true)
+                {
+                    test.fnPacketTest("T");
+                }
+            }
+
+            commandchar = '0';
+
+            if (CurrentObj == 1)
+            {
+                if (frame.Hands.Count > 0)
+                {
+                    HandList hands = frame.Hands;
+                    firstHand = hands[0];
+
+                }
+                else if (frame.Hands.Count > 1)
+                {
+                    HandList hands = frame.Hands;
+                    firstHand = hands[0];
+                    secondHand = hands[1];
+                }
+                else
+                {
+                    //   return;
+                }
+                if (firstHand != null)
+                {
+                    if (firstHand.IsRight && frame.Hands.Count < 2)
+                    {
+                        // return;
+                    }
+                    else if (firstHand.IsLeft && frame.Hands.Count < 2)
+                    {
+                        hand = firstHand;
+                        handleftflag = true;
+                    }
+
+                    if (firstHand.IsLeft && frame.Hands.Count > 1)
+                    {
+                        hand = firstHand;
+                        handright = secondHand;
+                        handleftflag = true;
+                    }
+                    if (firstHand.IsRight && frame.Hands.Count > 1)
+                    {
+                        hand = secondHand;
+                        handright = firstHand;
+                        handleftflag = true;
+                    }
+                }
+            }
+            else
+                hand = frame.Hands.Frontmost;
+            //GestureList gestures = frame.Gestures();
+            int Counter = 0;
+            if (CurrentObj != TotalObjects)
+            {
+                if (CurrentObj == 1)
+                {
+                    if (handleftflag == true)
+                    {
+                        //Debug.Log("Earth:");
+                        //Debug.Log(ObjCurrent[CurrentObj - 1].transform.position);
+                        //Debug.Log("Hand:");
+
+
+                        //Debug.Log(hand.PalmPosition);
+
+
+                        // Move sphere around the circle
+                        //if()
+                        Vector3 temp = new Vector3(0, 0, 0);
+                        float palmposnorm = (hand.PalmPosition.y - 390) / 50;
+                        if ((ObjCurrent[CurrentObj - 1].transform.position.y - palmposnorm) > 0 && (ObjCurrent[CurrentObj - 1].transform.position.y) > 0.5)//0 before
+                        {
+                            temp = new Vector3(0, -0.01f, 0);
+                        }
+                        else if ((ObjCurrent[CurrentObj - 1].transform.position.y) < 1.5)//2 for the front
+                        {
+                            temp = new Vector3(0, 0.01f, 0);
+                        }
+                        // Debug.Log(temp);
+
+                        ObjCurrent[CurrentObj - 1].transform.position += temp;
+                    }
+                    if (frame.Hands.Count < 2)
+                    {
+                        OnUpdateFlag = false;
+                        return;
+                       ;
+                    }
+                        hand = handright;
+
+                }
+
+
+                foreach (Gesture gesture in gestures)
+                {
+                    switch (gesture.Type)
+                    {
+                        case Gesture.GestureType.TYPE_CIRCLE:
+                            CircleGesture circle = new CircleGesture(gesture);
+                            Counter++;
+
+                            // Calculate clock direction using the angle between circle normal and pointable
+                            string clockwiseness;
+                            if (circle.Pointable.Direction.AngleTo(circle.Normal) <= Math.PI / 2)
+                            {
+                                //Clockwise if angle is less than 90 degrees
+                                clockwiseness = "clockwise";
+                            }
+                            else
+                            {
+                                clockwiseness = "counterclockwise";
+                            }
+
+                            float sweptAngle = 0;
+
+                            // Calculate angle swept since last frame
+                            if (circle.State != Gesture.GestureState.STATE_START)
+                            {
+                                CircleGesture previousUpdate = new CircleGesture(controller.Frame(1).Gesture(circle.Id));
+                                sweptAngle = (previousUpdate.Progress - circle.Progress) * 360;
+                            }
+                            //Conduct cirlce gesture in clockwise order to play music, in counterclockwise order to pause the music.
+                            if (clockwiseness == "clockwise")
+                            {
+                                commandchar = 'a';
+
+                            }
+                            else
+                            {
+                                commandchar = 'd';
+                            }
+
+                            /*   Debug.Log("  Circle id: " + circle.Id
+                                               + ", " + circle.State
+                                               + ", progress: " + circle.Progress
+                                               + ", radius: " + circle.Radius
+                                               + ", angle: " + sweptAngle
+                                               + ", " + clockwiseness);*/
+                            break;
+                    }//end switch
+                }//end for each
+                 //end method
+                this.timer.Enabled = false;
+                handCount = 0;
+            }
+            else if (CurrentObj == TotalObjects && hand.IsValid)
+            {
+                HandWasValidFlag = true;
+                if (hand.IsRight && frameOnce == false)
+                {
+                    handCount = frame.Hands.Count;
+                    // Index finger coordinates    
+                    frameOnce = true;
+
+                    Leap.Vector handPos = hand.PalmPosition; // hand.Fingers[1].TipPosition;
+                    
+                    Leap.Vector fingVel = hand.Fingers[1].TipVelocity;
+                    fingvelabs = Math.Abs(fingVel.x) + Math.Abs(fingVel.y) + Math.Abs(fingVel.z);
+
+                    this.xPos = handPos.x+50;
+                    this.zPos = handPos.y ;
+                    this.yPos = -handPos.z;
+                    /*
+                    pitchTxt.Text = xPos.ToString();
+                    yawTxt.Text = yPos.ToString();
+                    rollTxt.Text = zPos.ToString();
+
+                    checkBox1.IsChecked = true;*/
+                   
+
+                    if (zPos > 75 && fingvelabs < 500)
+                    {
+                        if (executeServoCalc == true)
+                        {
+                            // Methods to be called to evaluate Theta and Phi
+                            mainServoLeapBox(xPos, yPos, zPos, out thetaNormMain, out siNormMain);
+                            servoTR(xPos, yPos, zPos, out thetaNormTR, out siNormTR);
+                            servoBR(xPos, yPos, zPos, out thetaNormBR, out siNormBR);
+                            flagSetCount++;
+                        }
+                        else
+                        {
+                            // mainServoLeapBox(xPos, yPos, zPos, out thetaNormMain, out siNormMain);
+                            servoBL(xPos, yPos, zPos, out thetaNormBL, out siNormBL);
+                            servoTL(xPos, yPos, zPos, out thetaNormTL, out siNormTL);
+                            flagSetCount++;
+                        }
+
+                    }
+                    //Gets executed only when one finger is extended
+                    this.timer.Enabled = true;//ServoMessage Timer
+                                              //Currently servo will get command only in a one finger mode/
+                                              //However the angle calculations can be observed with more than one extended finger/s
+
+                    /* mainT.Text = thetaNormMain.ToString();
+                     mainS.Text = siNormMain.ToString();
+                     tTR.Text = thetaNormTR.ToString();
+                     sTR.Text = siNormTR.ToString();
+                     tBR.Text = thetaNormBR.ToString();
+                     sBR.Text = siNormBR.ToString();
+                     tBL.Text = thetaNormBL.ToString();
+                     sBL.Text = siNormBL.ToString();
+                     tTL.Text = thetaNormTL.ToString();
+                     sTL.Text = siNormTL.ToString();*/
+                    frameOnce = false;
+                }
+                else
+                    handCount = 0;
+
+            }
+            else if(CurrentObj==TotalObjects && fingvelabs>500)//!(hand.IsValid) && HandWasValidFlag)
+                {
+                thetaNormMain = 90;
+                siNormMain =90;
+                thetaNormTR = 90;
+                siNormTR = 90;
+                thetaNormBR = 90;
+                siNormBR = 90;
+                thetaNormBL = 90;
+                siNormBL = 90;
+                thetaNormTL = 90;
+                siNormTL = 90;
+                AeroGunFlag = false;
+                string s5 = "A90:90&B90:90&C90:90&D90:90&E90:90&F:30:30^";
+                byteMsg = Encoding.ASCII.GetBytes(s5);
+                HandWasValidFlag = false;
+            }
+
+            if ((LeapKeyboardFlag && Input.GetKey(KeyCode.LeftArrow)) || commandchar == 'a')
+            {
+                AxisToRotateAround = Vector3.up;
+                //transform.Rotate(Vector3.up, turnSpeed * Time.deltaTime);
+                //camFront.transform.LookAt(Vector3.zero);
+                camFront.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+
+                //camRear.transform.LookAt(Vector3.zero);
+                camRear.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+
+                //camLeft.transform.LookAt(Vector3.zero);
+                camLeft.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+
+                //camRight.transform.LookAt(Vector3.zero);
+                camRight.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+                HC.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+            }
+
+            if ((LeapKeyboardFlag && Input.GetKey(KeyCode.RightArrow)) || commandchar == 'd')
+            {
+                AxisToRotateAround = Vector3.down;
+                camFront.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+
+
+                camRear.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+
+
+                camLeft.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+
+                camRight.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+                HC.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+            }
+
+
+            if ((LeapKeyboardFlag && Input.GetKey(KeyCode.UpArrow)) || commandchar == 'w')
+            {
+                AxisToRotateAround = Vector3.left;
+                camFront.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+
+
+                camRear.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+
+
+                camLeft.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+
+                camRight.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+
+                HC.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+
+            }
+
+
+            if ((LeapKeyboardFlag && Input.GetKey(KeyCode.DownArrow)) || commandchar == 's')
+            {
+                AxisToRotateAround = Vector3.right;
+                camFront.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+
+
+                camRear.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+
+
+                camLeft.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+
+                camRight.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+
+                HC.transform.RotateAround(Vector3.zero, AxisToRotateAround, turnSpeed * Time.deltaTime);
+            }
+
+            commandchar = '0';
+            OnUpdateFlag = false;
+        }
+    }
+}
